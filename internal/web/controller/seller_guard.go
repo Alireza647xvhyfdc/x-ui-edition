@@ -113,7 +113,8 @@ func sellerBlocked(u *model.User, cs *service.ClientService) (bool, error) {
 }
 
 // sellerCanAccess reports whether the request's user may act on every given
-// client. Admins always may; a refusal is written to c and reported as false.
+// client: it must own the client and hold every inbound the client is on.
+// Admins always may; a refusal is written to c and reported as false.
 func sellerCanAccess(c *gin.Context, cs *service.ClientService, emails ...string) bool {
 	u := session.GetLoginUser(c)
 	if !u.IsSeller() {
@@ -129,8 +130,37 @@ func sellerCanAccess(c *gin.Context, cs *service.ClientService, emails ...string
 			c.AbortWithStatus(http.StatusForbidden)
 			return false
 		}
+		granted, err := sellerHoldsClientInbounds(u, cs, email)
+		if err != nil {
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return false
+		}
+		if !granted {
+			c.AbortWithStatus(http.StatusForbidden)
+			return false
+		}
 	}
 	return true
+}
+
+// sellerHoldsClientInbounds reports whether every inbound the client is on is
+// still granted to the seller. An admin who revokes an inbound thereby also
+// revokes access to the links and credentials of clients on it.
+func sellerHoldsClientInbounds(u *model.User, cs *service.ClientService, email string) (bool, error) {
+	rec, err := cs.GetRecordByEmail(nil, email)
+	if err != nil {
+		return false, err
+	}
+	ids, err := cs.GetInboundIdsForRecord(rec.Id)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if !u.CanUseInbound(id) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // sellerCreateCheck applies a seller's inbound grants, limits and name ownership before a client is created.
@@ -231,6 +261,7 @@ func scopeInboundsForSeller(u *model.User, cs *service.ClientService, inbounds [
 
 func scopeInboundClients(ib *model.Inbound, owned map[string]bool) {
 	ib.Settings = keepOwnedClientsInSettings(ib.Settings, owned)
+	ib.StreamSettings = withoutServerSecrets(ib.StreamSettings)
 	kept := ib.ClientStats[:0]
 	for _, st := range ib.ClientStats {
 		if owned[st.Email] {
@@ -238,6 +269,35 @@ func scopeInboundClients(ib *model.Inbound, owned map[string]bool) {
 		}
 	}
 	ib.ClientStats = kept
+}
+
+// withoutServerSecrets removes the Reality private key and inline TLS private
+// keys from stream settings. No share link carries them, and a seller needs none.
+func withoutServerSecrets(stream string) string {
+	if stream == "" {
+		return stream
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(stream), &doc); err != nil {
+		return "{}"
+	}
+	if reality, ok := doc["realitySettings"].(map[string]any); ok {
+		delete(reality, "privateKey")
+	}
+	if tls, ok := doc["tlsSettings"].(map[string]any); ok {
+		if certs, ok := tls["certificates"].([]any); ok {
+			for _, cert := range certs {
+				if m, ok := cert.(map[string]any); ok {
+					delete(m, "key")
+				}
+			}
+		}
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return "{}"
+	}
+	return string(out)
 }
 
 // keepOwnedClientsInSettings drops settings.clients entries that the seller does

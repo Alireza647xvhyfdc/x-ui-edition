@@ -138,6 +138,15 @@ func (s *UserService) UpdateUser(id int, username string, password string) error
 		return err
 	}
 
+	// Checked before 2FA is touched: a rename to a taken name must change nothing.
+	var taken int64
+	if err := db.Model(model.User{}).Where("username = ? AND id <> ?", username, id).Count(&taken).Error; err != nil {
+		return err
+	}
+	if taken > 0 {
+		return fmt.Errorf("username already exists")
+	}
+
 	twoFactorEnable, err := s.settingService.GetTwoFactorEnable()
 	if err != nil {
 		return err
