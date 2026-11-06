@@ -121,3 +121,17 @@ func TestSellerSelfServiceRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestWithoutServerSecretsDropsRealityAndTLSPrivateKeys(t *testing.T) {
+	in := `{"network":"tcp","security":"reality",` +
+		`"realitySettings":{"show":false,"privateKey":"SECRET","target":"x:443"},` +
+		`"tlsSettings":{"certificates":[{"certificateFile":"/a.crt","keyFile":"/a.key","key":["PEM"]}]}}`
+	want := `{"network":"tcp","realitySettings":{"show":false,"target":"x:443"},` +
+		`"security":"reality","tlsSettings":{"certificates":[{"certificateFile":"/a.crt","keyFile":"/a.key"}]}}`
+	if got := withoutServerSecrets(in); got != want {
+		t.Errorf("withoutServerSecrets:\n got %s\nwant %s", got, want)
+	}
+	if got := withoutServerSecrets(""); got != "" {
+		t.Errorf("empty stream settings changed to %q", got)
+	}
+}
